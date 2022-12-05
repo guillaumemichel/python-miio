@@ -11,12 +11,123 @@ from miio.miot_models import DeviceModel, MiotAccess, MiotAction, MiotService
 
 from .status import GenericMiotStatus
 
+from .meta import Metadata
+
 _LOGGER = logging.getLogger(__name__)
+
+
+def pretty_status(result: "GenericMiotStatus", verbose=False):
+    """Pretty print status information."""
+    out = ""
+    props = result.property_dict()
+    for _name, prop in props.items():
+        pretty_value = prop.pretty_value
+
+        if "write" in prop.access:
+            out += "[S] "
+
+        out += f"{prop.description} ({prop.name}): {pretty_value}"
+
+        if prop.choices is not None:  # TODO: hide behind verbose flag?
+            out += (
+                " (from: "
+                + ", ".join([f"{c.description} ({c.value})" for c in prop.choices])
+                + ")"
+            )
+
+        if prop.range is not None:  # TODO: hide behind verbose flag?
+            out += (
+                f" (min: {prop.range[0]}, max: {prop.range[1]}, step: {prop.range[2]})"
+            )
+
+        if verbose:
+            out += f" ({prop.full_name})"
+
+        out += "\n"
+
+    return out
+
+
+def pretty_actions(result: Dict[str, ActionDescriptor]):
+    """Pretty print actions."""
+    out = ""
+    for _, desc in result.items():
+        out += f"{desc.id}\t\t{desc.name}\n"
+
+    return out
+
+
+def pretty_settings(result: Dict[str, SettingDescriptor]):
+    """Pretty print settings."""
+    out = ""
+    for _, desc in result.items():
+        out += f"# {desc.id} ({desc.name})"
+        out += f"  urn: {repr(desc.extras['urn'])}\n"
+        out += f"  siid: {desc.extras['siid']}\n"
+        out += f"  piid: {desc.extras['piid']}\n"
+
+    return out
+
+
+class GenericMiotStatus(DeviceStatus):
+    """Generic status for miot devices."""
+
+    def __init__(self, response, dev):
+        self._model: DeviceModel = dev._miot_model
+        self._dev = dev
+        self._data = {elem["did"]: elem["value"] for elem in response}
+        self._data_by_siid_piid = {
+            (elem["siid"], elem["piid"]): elem["value"] for elem in response
+        }
+
+    def __getattr__(self, item):
+        """Return attribute for name.
+
+        This is overridden to provide access to properties using (siid, piid) tuple.
+        """
+        # TODO: find a better way to encode the property information
+        serv, prop = item.split(":")
+        prop = self._model.get_property(serv, prop)
+        value = self._data[item]
+
+        # TODO: this feels like a wrong place to convert value to enum..
+        if prop.choices is not None:
+            for choice in prop.choices:
+                if choice.value == value:
+                    return choice.description
+
+            _LOGGER.warning(
+                "Unable to find choice for value: %s: %s", value, prop.choices
+            )
+
+        return self._data[item]
+
+    def property_dict(self) -> Dict[str, MiotProperty]:
+        """Return name-keyed dictionary of properties."""
+        res = {}
+
+        # We use (siid, piid) to locate the property as not all devices mirror the did in response
+        for (siid, piid), value in self._data_by_siid_piid.items():
+            prop = self._model.get_property_by_siid_piid(siid, piid)
+            prop.value = value
+            res[prop.name] = prop
+
+        return res
+
+    def __repr__(self):
+        s = f"<{self.__class__.__name__}"
+        for name, value in self.property_dict().items():
+            s += f" {name}={value}"
+        s += ">"
+
+        return s
 
 
 class GenericMiot(MiotDevice):
     # we support all devices, if not, it is a responsibility of caller to verify that
     _supported_models = ["*"]
+
+    _meta = Metadata.load()
 
     def __init__(
         self,
@@ -57,8 +168,16 @@ class GenericMiot(MiotDevice):
         _LOGGER.debug("Initialized: %s", self._miot_model)
         self._create_descriptors()
 
-    @command()
-    def status(self) -> GenericMiotStatus:
+    @command(
+        click.option(
+            "-v",
+            "--verbose",
+            is_flag=True,
+            help="Output full property path for metadata ",
+        ),
+        default_output=format_output(result_msg_fmt=pretty_status),
+    )
+    def status(self, verbose=False) -> GenericMiotStatus:
         """Return status based on the miot model."""
         if not self._initialized:
             self._initialize_descriptors()
@@ -71,9 +190,40 @@ class GenericMiot(MiotDevice):
 
         return GenericMiotStatus(response, self)
 
+    def get_extras(self, miot_entity):
+        """Enriches descriptor with extra meta data from yaml definitions."""
+        extras = miot_entity.extras
+        extras["urn"] = miot_entity.urn
+        extras["siid"] = miot_entity.siid
+
+        # TODO: ugly way to detect the type
+        if getattr(miot_entity, "aiid", None):
+            extras["aiid"] = miot_entity.aiid
+        if getattr(miot_entity, "piid", None):
+            extras["piid"] = miot_entity.piid
+
+        meta = self._meta.get_metadata(miot_entity)
+        if meta:
+            extras.update(meta)
+        else:
+            _LOGGER.warning(
+                "Unable to find extras for %s %s",
+                miot_entity.service,
+                repr(miot_entity.urn),
+            )
+
+        return extras
+
     def _create_action(self, act: MiotAction) -> Optional[ActionDescriptor]:
         """Create action descriptor for miot action."""
         desc = act.get_descriptor()
+        if act.inputs:
+            # TODO: need to figure out how to expose input parameters for downstreams
+            _LOGGER.warning(
+                "Got inputs for action, skipping %s for %s", act, act.service
+            )
+            return None
+
         call_action = partial(self.call_action_by, act.siid, act.aiid)
         desc.method = call_action
 
