@@ -60,7 +60,7 @@ updater = ["netifaces"]
 backup_extract = ["android_backup"]
 crcmod = ["crcmod"]
 
-[tool.poetry.dev-dependencies]
+[tool.poetry.group.dev.dependencies]
 pytest = ">=6.2.5"
 pytest-cov = "*"
 pytest-mock = "*"

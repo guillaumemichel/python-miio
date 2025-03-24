@@ -5,9 +5,9 @@ from enum import Enum
 from typing import Any, Optional
 
 try:
-    from pydantic.v1 import BaseModel, Field, PrivateAttr, root_validator
+    from pydantic.v1 import BaseModel, Field, PrivateAttr, model_validator
 except ImportError:
-    from pydantic import BaseModel, Field, PrivateAttr, root_validator
+    from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 from .descriptors import (
     AccessFlags,
@@ -96,7 +96,7 @@ class MiotEnumValue(BaseModel):
     description: str
     value: int
 
-    @root_validator
+    @model_validator(mode="after")
     def description_from_value(cls, values):
         """If description is empty, use the value instead."""
         if not values["description"]:
