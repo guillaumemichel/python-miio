@@ -2,7 +2,7 @@ import logging
 from datetime import timedelta
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, PrivateAttr, root_validator
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ class MiotEnumValue(BaseModel):
     description: str
     value: int
 
-    @root_validator
+    @model_validator(mode="after")
     def description_from_value(cls, values):
         """If description is empty, use the value instead."""
         if not values["description"]:
